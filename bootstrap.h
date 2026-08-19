@@ -13,4 +13,10 @@ struct event {
     char comm[TASK_COMM_LEN];
 };
 
+struct syscall_stats {
+    unsigned long long count;
+    unsigned long long total_latency_ns;
+    unsigned long long max_latency_ns;
+};
+
 #endif /* __BOOTSTRAP_H */

@@ -21,6 +21,13 @@ struct {
 } syscall_start SEC(".maps");
 
 struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+	__uint(max_entries, 1024);
+	__type(key, u32);
+	__type(value, struct syscall_stats);
+} syscall_stats_map SEC(".maps");
+
+struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 256 * 1024);
 } rb SEC(".maps");
@@ -50,8 +57,13 @@ int handle_sys_exit(struct bpf_raw_tracepoint_args *ctx){
 	u64 pid_tgid;
 	u32 tid;
 	u32 pid;
+	u32 syscall_id;
+
 	struct syscall_event_info *info;
 	struct event *e;
+	struct syscall_stats *stats;
+	struct syscall_stats zero_stats = {};
+
 	u64 latency_ns;
 
 	pid_tgid = bpf_get_current_pid_tgid();
@@ -64,18 +76,24 @@ int handle_sys_exit(struct bpf_raw_tracepoint_args *ctx){
 	}
 
 	latency_ns = bpf_ktime_get_ns() - info->start_ns;
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e) {
-		bpf_map_delete_elem(&syscall_start, &tid);
-		return 0;
+
+	syscall_id = info->syscall_id;
+	stats = bpf_map_lookup_elem(&syscall_stats_map, &syscall_id);
+
+	if (!stats) {
+		bpf_map_update_elem(&syscall_stats_map, &syscall_id, &zero_stats, BPF_NOEXIST);
+		stats = bpf_map_lookup_elem(&syscall_stats_map, &syscall_id);
+		if (!stats) {
+			return 0;
+		}
 	}
 
-	e->pid = pid;
-	e->syscall_id = info->syscall_id;
-	e->latency_ns = latency_ns;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+	stats->count++;
+	stats->total_latency_ns += latency_ns;
+	if (latency_ns > stats->max_latency_ns) {
+		stats->max_latency_ns = latency_ns;
+	}
 
-	bpf_ringbuf_submit(e, 0);
 	bpf_map_delete_elem(&syscall_start, &tid);
 	return 0;
 }

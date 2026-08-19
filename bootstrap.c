@@ -1,17 +1,25 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2020 Facebook */
 #include <argp.h>
+#include <stdint.h>
 #include <signal.h>
 #include <stdio.h>
 #include <time.h>
 #include <sys/resource.h>
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+#include <seccomp.h>
+#include <unistd.h>
 #include "bootstrap.h"
 #include "bootstrap.skel.h"
+
+#define MAX_SYSCALLS 1024
 
 static struct env {
     bool verbose;
 } env;
+
+
 
 const char *argp_program_version = "bootstrap 0.0";
 const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
@@ -63,19 +71,83 @@ static void sig_handler(int sig)
 	exiting = true;
 }
 
-static int handle_event(void *ctx, void *data, size_t data_sz)
-{
-	const struct event *e = data;
-	printf("%-8d %-16s %-12d %-12llu\n",
-		e->pid, e->comm, e->syscall_id, e->latency_ns / 1000
-	);
+static void print_stats(struct bootstrap_bpf *skel){
+	int map_fd;
+	int ncpus;
+	int err;
 
-	return 0;
+	uint32_t key;
+	uint32_t next_key;
+	struct syscall_stats *values;
+	char *syscall_name;
+
+	map_fd = bpf_map__fd(skel->maps.syscall_stats_map);
+	ncpus = libbpf_num_possible_cpus();
+	if (ncpus < 0) {
+		fprintf(stderr, "Failed to get number of possible CPUs: %d\n", ncpus);
+		return;
+	}
+
+	values = calloc(ncpus, sizeof(*values));
+	if (!values) {
+		fprintf(stderr, "Failed to allocate memory for values\n");
+		return;
+	}
+
+	printf("\n%-12s       %-12s  %-15s %-15s\n",
+		"SYSCALL_NAME",
+		"COUNT",
+		"AVG_US",
+		"MAX_US");
+
+	while (bpf_map_get_next_key(map_fd, NULL, &next_key) == 0) {
+        break;
+    }
+
+	key = next_key;
+	while(1){
+		unsigned long long total_count = 0;
+		unsigned long long total_latency_ns = 0;
+		unsigned long long max_latency_ns = 0;
+
+		err = bpf_map_lookup_elem(map_fd, &key, values);
+		if (err == 0){
+			for (int cpu = 0; cpu < ncpus; cpu++) {
+				total_count += values[cpu].count;
+				total_latency_ns += values[cpu].total_latency_ns;
+				if (values[cpu].max_latency_ns > max_latency_ns) {
+					max_latency_ns = values[cpu].max_latency_ns;
+				}
+			}
+
+			if (total_count > 0) {
+				double avg_latency_us = total_latency_ns / total_count / 1000;
+				double max_latency_us = max_latency_ns / 1000;
+				syscall_name = seccomp_syscall_resolve_num_arch(SCMP_ARCH_NATIVE, key);
+
+				printf("%-20s %-12llu %-15.2f %-15.2f\n",
+				syscall_name ? syscall_name : "unknown",
+				total_count,
+				avg_latency_us,
+				max_latency_us);
+			}
+
+			if (bpf_map_get_next_key(map_fd, &key, &next_key) != 0) {
+				bpf_map_delete_elem(map_fd, &key);
+				break;
+			}
+
+			bpf_map_delete_elem(map_fd, &key);
+			key = next_key;
+		}
+	}
+
+	free(values);
+	free(syscall_name);
 }
 
 int main(int argc, char **argv)
 {
-	struct ring_buffer *rb = NULL;
 	struct bootstrap_bpf *skel;
 	int err;
 
@@ -98,7 +170,6 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-
 	/* Load & verify BPF programs */
 	err = bootstrap_bpf__load(skel);
 	if (err) {
@@ -113,33 +184,14 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	/* Set up ring buffer polling */
-	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
-	if (!rb) {
-		err = -1;
-		fprintf(stderr, "Failed to create ring buffer\n");
-		goto cleanup;
-	}
-
 	/* Process events */
-	printf("%-8s %-16s %-12s %-12s\n", "PID", "COMM", "SYSCALL_ID", "LATENCY_US");
 	while (!exiting) {
-		err = ring_buffer__poll(rb, 100 /* timeout, ms */);
-		/* Ctrl-C will cause -EINTR */
-		if (err == -EINTR) {
-			err = 0;
-			break;
-		}
-		if (err < 0) {
-			printf("Error polling perf buffer: %d\n", err);
-			break;
-		}
+		print_stats(skel);
+		sleep(10);
 	}
 
 cleanup:
 	/* Clean up */
-	ring_buffer__free(rb);
 	bootstrap_bpf__destroy(skel);
-
 	return err < 0 ? -err : 0;
 }
