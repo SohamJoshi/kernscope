@@ -121,15 +121,6 @@ python3 benchmarks/syscall_saturation.py > off.txt
 python3 benchmarks/syscall_saturation.py > on.txt
 ```
 
-If you want, I can run the full benchmark again on your machine and produce CSV output and a short report.
-
 Limitations
 - V1 focuses on syscall latency only. Scheduler, I/O, memory tracing are planned for future releases.
 - Percentiles are approximations (log2 histogram); not exact.
-
-Roadmap
-- Scheduler / runqueue latency
-- Page faults / memory events
-- Block I/O tracing
-- CPU profiling and further hot-path optimizations
-
