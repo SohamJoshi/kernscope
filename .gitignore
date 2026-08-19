@@ -1,5 +1,5 @@
-.output/
-bootstrap
+/.output/
+kernscope
 *.o
 *.tmp.*
 vmlinux.h

@@ -27,7 +27,7 @@ INCLUDES := -I$(OUTPUT) \
 CFLAGS := -g -Wall
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS)
 
-APPS = bootstrap
+APPS = kernscope
 
 CARGO ?= $(shell which cargo)
 ifeq ($(strip $(CARGO)),)
